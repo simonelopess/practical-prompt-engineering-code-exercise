@@ -1,5 +1,6 @@
 # Pages: não uses `wrangler deploy` (é para Workers). Usa `npm run deploy`.
-name = "prompt-engineering"
+# wrangler.toml
+name = 'practical-prompt-engineering-code-exercise'
 compatibility_date = "2024-11-01"
 pages_build_output_dir = "."
 
