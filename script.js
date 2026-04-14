@@ -1,7 +1,12 @@
 (function() {
   const STORAGE_KEY = 'promptLibrary.items.v1';
-  const NOTES_KEY = 'promptNotes.v1'; // localStorage key for notes
+  const NOTES_KEY = 'promptNotes.v1';
+  const API_LIBRARY = '/api/library';
   const META_VERSION = 'v1';
+
+  /** In-memory cache synced with D1 via PUT /api/library */
+  let promptsCache = [];
+  let notesCache = {};
 
   const form = document.getElementById('prompt-form');
   const titleInput = document.getElementById('prompt-title');
@@ -14,18 +19,45 @@
   const cardTemplate = document.getElementById('prompt-card-template');
 
   function loadPrompts() {
+    return promptsCache
+      .filter(p => p && typeof p.id === 'string')
+      .map(p => hydrateLegacyPrompt(p))
+      .sort((a,b) => new Date(b.metadata?.createdAt || 0) - new Date(a.metadata?.createdAt || 0));
+  }
+
+  async function loadLibraryFromApi() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return [];
-      const data = JSON.parse(raw);
-      if (!Array.isArray(data)) return [];
-      return data
+      const r = await fetch(API_LIBRARY);
+      if (!r.ok) throw new Error(r.statusText || String(r.status));
+      const data = await r.json();
+      const raw = Array.isArray(data.prompts) ? data.prompts : [];
+      promptsCache = raw
         .filter(p => p && typeof p.id === 'string')
         .map(p => hydrateLegacyPrompt(p))
         .sort((a,b) => new Date(b.metadata?.createdAt || 0) - new Date(a.metadata?.createdAt || 0));
+      notesCache = data.notes && typeof data.notes === 'object' ? data.notes : {};
     } catch (e) {
-      console.warn('Failed to parse stored prompts', e);
-      return [];
+      console.warn('Failed to load library from API', e);
+      promptsCache = [];
+      notesCache = {};
+      errorEl.textContent = 'Could not load data from the server. If you opened this file locally, use Cloudflare Pages.';
+    }
+  }
+
+  async function persistLibrary() {
+    try {
+      const r = await fetch(API_LIBRARY, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompts: promptsCache, notes: notesCache })
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(t || r.statusText);
+      }
+    } catch (e) {
+      console.error('Failed to persist library', e);
+      showIEMessage('Failed to save to server: ' + (e.message || e), 'error');
     }
   }
 
@@ -51,12 +83,9 @@
     }
   }
 
-  function savePrompts(prompts) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(prompts));
-    } catch (e) {
-      console.error('Failed to save prompts', e);
-    }
+  async function savePrompts(prompts) {
+    promptsCache = prompts;
+    await persistLibrary();
   }
 
   function createId() {
@@ -83,7 +112,7 @@
       node.querySelector('.card-title').textContent = p.title;
       node.querySelector('.card-preview').textContent = preview(p.content);
       const delBtn = node.querySelector('.delete-btn');
-      delBtn.addEventListener('click', () => deletePrompt(p.id));
+      delBtn.addEventListener('click', () => { void deletePrompt(p.id); });
 
       // Metadata injection
       const metaHost = node.querySelector('[data-role=metadata]');
@@ -112,9 +141,9 @@
     return joined + (trim(text).split(/\s+/).length > words.length ? ' …' : '');
   }
 
-  function deletePrompt(id) {
+  async function deletePrompt(id) {
     const prompts = loadPrompts().filter(p => p.id !== id);
-    savePrompts(prompts);
+    await savePrompts(prompts);
     render(prompts);
   }
 
@@ -127,7 +156,7 @@
     return n >= 1 && n <= MAX_STARS ? n : null;
   }
 
-  function setRating(promptId, value) {
+  async function setRating(promptId, value) {
     const prompts = loadPrompts();
     const prompt = prompts.find(p => p.id === promptId);
     if (!prompt) return;
@@ -135,7 +164,7 @@
     const next = normalizeRating(value);
     // Toggle off if same value clicked
     prompt.userRating = (current && next && current === next) ? null : next;
-    savePrompts(prompts);
+    await savePrompts(prompts);
     updateCardRatingUI(promptId, prompt.userRating);
   }
 
@@ -155,7 +184,7 @@
       btn.setAttribute('aria-checked', String(prompt.userRating === i));
       btn.setAttribute('aria-label', `${i} star${i>1?'s':''}`);
       btn.textContent = prompt.userRating >= i ? '★' : '☆';
-      btn.addEventListener('click', () => setRating(prompt.id, i));
+      btn.addEventListener('click', () => { void setRating(prompt.id, i); });
       btn.addEventListener('keydown', (e) => handleStarKey(e, prompt.id));
       btn.addEventListener('pointerenter', () => previewHover(wrap, i));
       btn.addEventListener('pointerleave', () => clearHover(wrap, prompt.userRating));
@@ -186,25 +215,25 @@
     if (['ArrowRight','ArrowUp'].includes(key)) {
       e.preventDefault();
       const next = Math.min(MAX_STARS, currentVal + 1);
-      setRating(promptId, next);
+      void setRating(promptId, next);
       focusStar(promptId, next);
     } else if (['ArrowLeft','ArrowDown'].includes(key)) {
       e.preventDefault();
       const prev = Math.max(1, currentVal - 1);
-      setRating(promptId, prev);
+      void setRating(promptId, prev);
       focusStar(promptId, prev);
     } else if (key === 'Home') {
       e.preventDefault();
-      setRating(promptId, 1); focusStar(promptId, 1);
+      void setRating(promptId, 1); focusStar(promptId, 1);
     } else if (key === 'End') {
       e.preventDefault();
-      setRating(promptId, MAX_STARS); focusStar(promptId, MAX_STARS);
+      void setRating(promptId, MAX_STARS); focusStar(promptId, MAX_STARS);
     } else if (key === 'Enter' || key === ' ') {
       e.preventDefault();
-      setRating(promptId, currentVal);
+      void setRating(promptId, currentVal);
     } else if (key === 'Backspace' || key === 'Delete' || key === 'Escape') {
       e.preventDefault();
-      setRating(promptId, null);
+      void setRating(promptId, null);
     }
   }
 
@@ -230,7 +259,7 @@
     });
   }
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     errorEl.textContent = '';
 
@@ -264,15 +293,16 @@
 
     const prompts = loadPrompts();
     prompts.unshift({ id: createId(), title, content, metadata });
-    savePrompts(prompts);
+    await savePrompts(prompts);
     render(prompts);
 
     form.reset();
     titleInput.focus();
   }
 
-  function init() {
-    form.addEventListener('submit', handleSubmit);
+  async function init() {
+    await loadLibraryFromApi();
+    form.addEventListener('submit', (e) => { void handleSubmit(e); });
     render(loadPrompts());
     setupImportExport();
   }
@@ -281,24 +311,12 @@
   // Data shape: { [promptId]: [ { id, content, createdAt, updatedAt } ] }
 
   function loadNotesStore() {
-    try {
-      const raw = localStorage.getItem(NOTES_KEY);
-      if (!raw) return {};
-      const data = JSON.parse(raw);
-      return data && typeof data === 'object' ? data : {};
-    } catch (e) {
-      console.warn('Notes storage corrupted, resetting.', e);
-      return {};
-    }
+    return notesCache && typeof notesCache === 'object' ? notesCache : {};
   }
 
-  function saveNotesStore(store) {
-    try {
-      localStorage.setItem(NOTES_KEY, JSON.stringify(store));
-    } catch (e) {
-      console.error('Failed to persist notes', e);
-      // Could expose inline error in each notes section on next render
-    }
+  async function saveNotesStore(store) {
+    notesCache = store;
+    await persistLibrary();
   }
 
   function getNotes(promptId) {
@@ -309,37 +327,40 @@
       .sort((a,b) => b.createdAt - a.createdAt);
   }
 
-  function addNote(promptId, content) {
+  async function addNote(promptId, content) {
     const trimmed = (content || '').trim();
     if (!trimmed) return { error: 'Note cannot be empty.' };
-    const store = loadNotesStore();
+    const store = { ...loadNotesStore() };
     if (!Array.isArray(store[promptId])) store[promptId] = [];
+    store[promptId] = [...store[promptId]];
     const note = { id: noteId(), content: trimmed, createdAt: Date.now(), updatedAt: Date.now() };
     store[promptId].unshift(note);
-    saveNotesStore(store);
+    await saveNotesStore(store);
     return { note };
   }
 
-  function updateNote(promptId, noteIdVal, newContent) {
-    const store = loadNotesStore();
-    const list = Array.isArray(store[promptId]) ? store[promptId] : [];
+  async function updateNote(promptId, noteIdVal, newContent) {
+    const store = { ...loadNotesStore() };
+    const list = Array.isArray(store[promptId]) ? [...store[promptId]] : [];
     const note = list.find(n => n.id === noteIdVal);
     if (!note) return { error: 'Note not found.' };
     const val = (newContent || '').trim();
     if (!val) return { error: 'Note cannot be empty.' };
     note.content = val;
     note.updatedAt = Date.now();
-    saveNotesStore(store);
+    store[promptId] = list;
+    await saveNotesStore(store);
     return { note };
   }
 
-  function deleteNote(promptId, noteIdVal) {
-    const store = loadNotesStore();
-    const list = Array.isArray(store[promptId]) ? store[promptId] : [];
+  async function deleteNote(promptId, noteIdVal) {
+    const store = { ...loadNotesStore() };
+    const list = Array.isArray(store[promptId]) ? [...store[promptId]] : [];
     const idx = list.findIndex(n => n.id === noteIdVal);
     if (idx === -1) return false;
     list.splice(idx, 1);
-    saveNotesStore(store);
+    store[promptId] = list;
+    await saveNotesStore(store);
     return true;
   }
 
@@ -421,12 +442,13 @@
       } else if (action === 'delete-note') {
         const noteEl = target.closest('.note');
         if (noteEl && confirm('Delete this note?')) {
-          deleteNote(promptId, noteEl.dataset.noteId);
-          renderNotesList(promptId, section.querySelector('.notes-list'));
+          void deleteNote(promptId, noteEl.dataset.noteId).then(() => {
+            renderNotesList(promptId, section.querySelector('.notes-list'));
+          });
         }
       } else if (action === 'save-note') {
         const editor = target.closest('.note');
-        if (editor) commitNoteEdit(section, promptId, editor, false);
+        if (editor) void commitNoteEdit(section, promptId, editor, false);
       } else if (action === 'cancel-note') {
         const editor = target.closest('.note');
         if (editor) cancelNoteEdit(section, promptId, editor);
@@ -440,7 +462,7 @@
         if (editor) cancelNoteEdit(section, section.dataset.promptId, editor);
       } else if ((e.key === 'Enter' && (e.metaKey || e.ctrlKey))) {
         const editor = target.closest('.note');
-        if (editor) commitNoteEdit(section, section.dataset.promptId, editor, false);
+        if (editor) void commitNoteEdit(section, section.dataset.promptId, editor, false);
       }
     });
   }
@@ -492,7 +514,7 @@
     node.querySelector('textarea').focus();
   }
 
-  function commitNoteEdit(section, promptId, editorNode, silent) {
+  async function commitNoteEdit(section, promptId, editorNode, silent) {
     const textarea = editorNode.querySelector('textarea');
     if (!textarea) return;
     const validationEl = editorNode.querySelector('[data-role=validation]');
@@ -504,11 +526,11 @@
       return;
     }
     if (mode === 'new') {
-      const { error } = addNote(promptId, value);
+      const { error } = await addNote(promptId, value);
       if (error) { validationEl.textContent = error; return; }
     } else if (mode === 'edit') {
       const noteIdVal = editorNode.dataset.noteId;
-      const { error } = updateNote(promptId, noteIdVal, value);
+      const { error } = await updateNote(promptId, noteIdVal, value);
       if (error) { validationEl.textContent = error; return; }
     }
     renderNotesList(promptId, section.querySelector('.notes-list'));
@@ -539,7 +561,7 @@
     return str.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
   }
 
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', () => { void init(); });
 
   /* ================= Metadata System ================= */
   // Types (JSDoc):
@@ -722,7 +744,7 @@
       application: 'Prompt Library',
       meta: {
         stats,
-        storageKeys: { prompts: STORAGE_KEY, notes: NOTES_KEY },
+        storageKeys: { prompts: STORAGE_KEY, notes: NOTES_KEY, backend: 'd1' },
         sourceUrl: location.href.split('#')[0]
       },
       data: { prompts, notes: notesStore }
@@ -843,32 +865,29 @@
     return 'keepBoth';
   }
 
-  /** Backup existing data before import */
+  let importBackupSnapshot = null;
+
+  /** Backup existing data before import (in-memory + optional server sync on rollback) */
   function backupCurrentData() {
-    const payload = buildExportPayload();
-    try {
-      localStorage.setItem(STORAGE_KEY + '.backup', JSON.stringify(payload.data.prompts));
-      localStorage.setItem(NOTES_KEY + '.backup', JSON.stringify(payload.data.notes));
-    } catch (e) {
-      console.warn('Failed to persist backup', e);
-    }
+    importBackupSnapshot = {
+      prompts: loadPrompts().map(p => JSON.parse(JSON.stringify(p))),
+      notes: JSON.parse(JSON.stringify(loadNotesStore()))
+    };
   }
 
-  function rollbackFromBackup() {
-    try {
-      const p = localStorage.getItem(STORAGE_KEY + '.backup');
-      const n = localStorage.getItem(NOTES_KEY + '.backup');
-      if (p) localStorage.setItem(STORAGE_KEY, p);
-      if (n) localStorage.setItem(NOTES_KEY, n);
-    } catch (e) {
-      console.error('Rollback failed', e);
-    }
+  async function rollbackFromBackup() {
+    if (!importBackupSnapshot) return;
+    promptsCache = importBackupSnapshot.prompts.map(p => hydrateLegacyPrompt(p));
+    notesCache = JSON.parse(JSON.stringify(importBackupSnapshot.notes));
+    await persistLibrary();
+    importBackupSnapshot = null;
   }
 
   function importFile(file) {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
+      void (async () => {
       try {
         backupCurrentData();
         const { prompts: incomingPrompts, notes: incomingNotes } = parseImportFile(String(reader.result));
@@ -887,16 +906,19 @@
               finalNotes[pid].push(n);
             }
         }
-        savePrompts(mergedPrompts);
-        saveNotesStore(finalNotes);
+        promptsCache = mergedPrompts;
+        notesCache = finalNotes;
+        await persistLibrary();
         render(mergedPrompts);
+        importBackupSnapshot = null;
         showIEMessage(`Import successful. Added ${incomingPrompts.length} prompt(s).`, 'success');
       } catch (e) {
         console.error('Import error', e);
-        rollbackFromBackup();
+        await rollbackFromBackup();
         render(loadPrompts());
         showIEMessage('Import failed: '+(e.message||e), 'error');
       }
+      })();
     };
     reader.onerror = () => {
       showIEMessage('Failed reading file.', 'error');
