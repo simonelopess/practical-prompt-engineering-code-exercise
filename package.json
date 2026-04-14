@@ -1,0 +1,10 @@
+{
+  "name": "prompt-library",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler pages deploy . --project-name=prompt-library"
+  },
+  "devDependencies": {
+    "wrangler": "^4.82.2"
+  }
+}
