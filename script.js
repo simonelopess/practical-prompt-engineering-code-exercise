@@ -2,7 +2,20 @@
   const STORAGE_KEY = 'promptLibrary.items.v1';
   const NOTES_KEY = 'promptNotes.v1';
   const API_LIBRARY = '/api/library';
+  const WRITE_TOKEN_KEY = 'promptLibrary.writeToken.v1';
   const META_VERSION = 'v1';
+
+  function getWriteToken() {
+    try {
+      return sessionStorage.getItem(WRITE_TOKEN_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function canEdit() {
+    return getWriteToken().length > 0;
+  }
 
   /** In-memory cache synced with D1 via PUT /api/library */
   let promptsCache = [];
@@ -45,12 +58,29 @@
   }
 
   async function persistLibrary() {
+    if (!canEdit()) {
+      showIEMessage('Editing requires unlocking with an editor token (header).', 'error');
+      return;
+    }
     try {
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + getWriteToken()
+      };
       const r = await fetch(API_LIBRARY, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ prompts: promptsCache, notes: notesCache })
       });
+      if (r.status === 401) {
+        try {
+          sessionStorage.removeItem(WRITE_TOKEN_KEY);
+        } catch (_) {}
+        applyEditModeUI();
+        render(loadPrompts());
+        showIEMessage('Session expired or invalid token. Unlocked editing was cleared.', 'error');
+        return;
+      }
       if (!r.ok) {
         const t = await r.text();
         throw new Error(t || r.statusText);
@@ -84,6 +114,10 @@
   }
 
   async function savePrompts(prompts) {
+    if (!canEdit()) {
+      showIEMessage('Read-only: use editor token in the header to add or change prompts.', 'error');
+      return;
+    }
     promptsCache = prompts;
     await persistLibrary();
   }
@@ -96,6 +130,7 @@
 
   function render(prompts) {
     listEl.innerHTML = '';
+    const ro = !canEdit();
 
     if (!prompts.length) {
       emptyEl.hidden = false;
@@ -112,7 +147,11 @@
       node.querySelector('.card-title').textContent = p.title;
       node.querySelector('.card-preview').textContent = preview(p.content);
       const delBtn = node.querySelector('.delete-btn');
-      delBtn.addEventListener('click', () => { void deletePrompt(p.id); });
+      if (ro) {
+        delBtn.hidden = true;
+      } else {
+        delBtn.addEventListener('click', () => { void deletePrompt(p.id); });
+      }
 
       // Metadata injection
       const metaHost = node.querySelector('[data-role=metadata]');
@@ -127,9 +166,9 @@
 
       // Rating component mount point (insert before actions)
       const main = node.querySelector('.card-main');
-      main.appendChild(buildRatingElement(p));
+      main.appendChild(buildRatingElement(p, ro));
       // Notes section injection
-      main.appendChild(buildNotesSection(p.id));
+      main.appendChild(buildNotesSection(p.id, ro));
       frag.appendChild(node);
     });
     listEl.appendChild(frag);
@@ -142,6 +181,10 @@
   }
 
   async function deletePrompt(id) {
+    if (!canEdit()) {
+      showIEMessage('Read-only: cannot delete prompts.', 'error');
+      return;
+    }
     const prompts = loadPrompts().filter(p => p.id !== id);
     await savePrompts(prompts);
     render(prompts);
@@ -157,6 +200,7 @@
   }
 
   async function setRating(promptId, value) {
+    if (!canEdit()) return;
     const prompts = loadPrompts();
     const prompt = prompts.find(p => p.id === promptId);
     if (!prompt) return;
@@ -168,11 +212,11 @@
     updateCardRatingUI(promptId, prompt.userRating);
   }
 
-  function buildRatingElement(prompt) {
+  function buildRatingElement(prompt, readOnly) {
     // Ensure property exists for legacy stored prompts
     if (!('userRating' in prompt)) prompt.userRating = null;
     const wrap = document.createElement('div');
-    wrap.className = 'rating';
+    wrap.className = 'rating' + (readOnly ? ' rating--readonly' : '');
     wrap.setAttribute('role', 'radiogroup');
     wrap.setAttribute('aria-label', `Rate ${prompt.title}`);
     for (let i = 1; i <= MAX_STARS; i++) {
@@ -184,10 +228,15 @@
       btn.setAttribute('aria-checked', String(prompt.userRating === i));
       btn.setAttribute('aria-label', `${i} star${i>1?'s':''}`);
       btn.textContent = prompt.userRating >= i ? '★' : '☆';
-      btn.addEventListener('click', () => { void setRating(prompt.id, i); });
-      btn.addEventListener('keydown', (e) => handleStarKey(e, prompt.id));
-      btn.addEventListener('pointerenter', () => previewHover(wrap, i));
-      btn.addEventListener('pointerleave', () => clearHover(wrap, prompt.userRating));
+      if (readOnly) {
+        btn.disabled = true;
+        btn.setAttribute('tabindex', '-1');
+      } else {
+        btn.addEventListener('click', () => { void setRating(prompt.id, i); });
+        btn.addEventListener('keydown', (e) => handleStarKey(e, prompt.id));
+        btn.addEventListener('pointerenter', () => previewHover(wrap, i));
+        btn.addEventListener('pointerleave', () => clearHover(wrap, prompt.userRating));
+      }
       wrap.appendChild(btn);
     }
     return wrap;
@@ -262,6 +311,10 @@
   async function handleSubmit(e) {
     e.preventDefault();
     errorEl.textContent = '';
+    if (!canEdit()) {
+      errorEl.textContent = 'Read-only: unlock editing with the editor token in the header.';
+      return;
+    }
 
     const title = trim(titleInput.value);
     const content = trim(contentInput.value);
@@ -300,8 +353,66 @@
     titleInput.focus();
   }
 
+  function applyEditModeUI() {
+    const edit = canEdit();
+    document.body.classList.toggle('read-only-mode', !edit);
+    const formPanel = document.getElementById('prompt-form');
+    if (formPanel) {
+      formPanel.querySelectorAll('input, textarea, button').forEach(el => {
+        el.disabled = !edit;
+      });
+    }
+    const importBtn = document.getElementById('import-btn');
+    if (importBtn) importBtn.disabled = !edit;
+    const unlockBtn = document.getElementById('auth-unlock-btn');
+    const lockBtn = document.getElementById('auth-lock-btn');
+    const tokenInput = document.getElementById('editor-token');
+    if (unlockBtn && lockBtn) {
+      unlockBtn.hidden = edit;
+      lockBtn.hidden = !edit;
+    }
+    if (tokenInput && edit) tokenInput.value = '';
+    const statusEl = document.getElementById('auth-status');
+    if (statusEl) {
+      statusEl.textContent = edit ? 'Editing unlocked' : 'View only — token required to edit';
+    }
+  }
+
+  function setupAuthBar() {
+    const unlockBtn = document.getElementById('auth-unlock-btn');
+    const lockBtn = document.getElementById('auth-lock-btn');
+    const tokenInput = document.getElementById('editor-token');
+    if (!unlockBtn || !lockBtn || !tokenInput) return;
+    unlockBtn.addEventListener('click', () => {
+      const t = (tokenInput.value || '').trim();
+      if (!t) {
+        const st = document.getElementById('auth-status');
+        if (st) st.textContent = 'Enter the editor token first.';
+        return;
+      }
+      try {
+        sessionStorage.setItem(WRITE_TOKEN_KEY, t);
+      } catch (e) {
+        showIEMessage('Could not save session.', 'error');
+        return;
+      }
+      tokenInput.value = '';
+      applyEditModeUI();
+      render(loadPrompts());
+    });
+    lockBtn.addEventListener('click', () => {
+      try {
+        sessionStorage.removeItem(WRITE_TOKEN_KEY);
+      } catch (_) {}
+      applyEditModeUI();
+      render(loadPrompts());
+    });
+  }
+
   async function init() {
     await loadLibraryFromApi();
+    setupAuthBar();
+    applyEditModeUI();
     form.addEventListener('submit', (e) => { void handleSubmit(e); });
     render(loadPrompts());
     setupImportExport();
@@ -315,6 +426,10 @@
   }
 
   async function saveNotesStore(store) {
+    if (!canEdit()) {
+      showIEMessage('Read-only: unlock editing to change notes.', 'error');
+      return;
+    }
     notesCache = store;
     await persistLibrary();
   }
@@ -368,25 +483,27 @@
     return 'note_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,6);
   }
 
-  function buildNotesSection(promptId) {
+  function buildNotesSection(promptId, readOnly) {
     const wrap = document.createElement('section');
     wrap.className = 'notes';
     wrap.dataset.promptId = promptId;
+    wrap.dataset.readOnly = readOnly ? '1' : '0';
     wrap.setAttribute('aria-labelledby', `notes-title-${promptId}`);
     wrap.innerHTML = `
       <div class="notes-header">
         <h4 id="notes-title-${promptId}" class="notes-title">Notes</h4>
-        <button type="button" class="add-note-btn" data-action="add-note" aria-label="Add note" data-prompt-id="${promptId}">Add</button>
+        ${readOnly ? '' : `<button type="button" class="add-note-btn" data-action="add-note" aria-label="Add note" data-prompt-id="${promptId}">Add</button>`}
       </div>
       <div class="notes-error" hidden></div>
       <ul class="notes-list" role="list"></ul>
     `;
-    renderNotesList(promptId, wrap.querySelector('.notes-list'));
+    renderNotesList(promptId, wrap.querySelector('.notes-list'), readOnly);
     attachNotesHandlers(wrap);
     return wrap;
   }
 
-  function renderNotesList(promptId, listRoot) {
+  function renderNotesList(promptId, listRoot, readOnly) {
+    if (readOnly === undefined) readOnly = !canEdit();
     listRoot.innerHTML = '';
     const notes = getNotes(promptId);
     if (!notes.length) {
@@ -396,23 +513,26 @@
       return;
     }
     const frag = document.createDocumentFragment();
-    notes.forEach(n => frag.appendChild(renderNoteItem(promptId, n)));
+    notes.forEach(n => frag.appendChild(renderNoteItem(promptId, n, readOnly)));
     listRoot.appendChild(frag);
   }
 
-  function renderNoteItem(promptId, note) {
+  function renderNoteItem(promptId, note, readOnly) {
     const li = document.createElement('li');
     li.className = 'note';
     li.dataset.noteId = note.id;
     const edited = note.updatedAt && note.updatedAt !== note.createdAt;
+    const buttons = readOnly
+      ? ''
+      : `<div class="note-buttons">
+          <button type="button" data-action="edit-note" aria-label="Edit note">Edit</button>
+          <button type="button" data-action="delete-note" aria-label="Delete note">Del</button>
+        </div>`;
     li.innerHTML = `
       <p class="note-content" data-role="content"></p>
       <div class="note-meta">
         <time>${formatTs(note.createdAt)}${edited ? ' · Edited' : ''}</time>
-        <div class="note-buttons">
-          <button type="button" data-action="edit-note" aria-label="Edit note">Edit</button>
-          <button type="button" data-action="delete-note" aria-label="Delete note">Del</button>
-        </div>
+        ${buttons}
       </div>
     `;
     li.querySelector('[data-role=content]').textContent = note.content;
@@ -428,6 +548,7 @@
 
   function attachNotesHandlers(section) {
     section.addEventListener('click', (e) => {
+      if (section.dataset.readOnly === '1' || !canEdit()) return;
       const target = e.target;
       if (!(target instanceof HTMLElement)) return;
       const action = target.dataset.action;
@@ -443,7 +564,7 @@
         const noteEl = target.closest('.note');
         if (noteEl && confirm('Delete this note?')) {
           void deleteNote(promptId, noteEl.dataset.noteId).then(() => {
-            renderNotesList(promptId, section.querySelector('.notes-list'));
+            renderNotesList(promptId, section.querySelector('.notes-list'), section.dataset.readOnly === '1');
           });
         }
       } else if (action === 'save-note') {
@@ -533,23 +654,25 @@
       const { error } = await updateNote(promptId, noteIdVal, value);
       if (error) { validationEl.textContent = error; return; }
     }
-    renderNotesList(promptId, section.querySelector('.notes-list'));
+    const ro = section.dataset.readOnly === '1';
+    renderNotesList(promptId, section.querySelector('.notes-list'), ro);
   }
 
   function cancelNoteEdit(section, promptId, editorNode) {
+    const ro = section.dataset.readOnly === '1';
     const mode = editorNode.dataset.mode;
     if (mode === 'new') {
       editorNode.remove();
       // If list now empty, re-render to show empty state message
       const list = section.querySelector('.notes-list');
-      if (!list.querySelector('.note')) renderNotesList(promptId, list);
+      if (!list.querySelector('.note')) renderNotesList(promptId, list, ro);
     } else if (mode === 'edit') {
       // Restore original
       const original = editorNode.dataset.original || '';
       const noteIdVal = editorNode.dataset.noteId;
       const storeNote = getNotes(promptId).find(n => n.id === noteIdVal);
       if (storeNote) {
-        const replacement = renderNoteItem(promptId, storeNote);
+        const replacement = renderNoteItem(promptId, storeNote, ro);
         editorNode.replaceWith(replacement);
       } else {
         editorNode.remove();
@@ -889,6 +1012,10 @@
     reader.onload = () => {
       void (async () => {
       try {
+        if (!canEdit()) {
+          showIEMessage('Import requires unlocking editing with the editor token.', 'error');
+          return;
+        }
         backupCurrentData();
         const { prompts: incomingPrompts, notes: incomingNotes } = parseImportFile(String(reader.result));
         const existingPrompts = loadPrompts();

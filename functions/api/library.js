@@ -16,6 +16,31 @@ function errorResponse(message, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
+/** Constant-time string compare for bearer token */
+function safeTokenEq(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+
+function authorizeWrite(request, env) {
+  const secret = env.LIBRARY_WRITE_SECRET;
+  if (secret == null || String(secret).length === 0) {
+    return { ok: false, response: errorResponse('Writes not configured (LIBRARY_WRITE_SECRET)', 503) };
+  }
+  const auth = request.headers.get('Authorization') || '';
+  const prefix = 'Bearer ';
+  if (!auth.startsWith(prefix)) {
+    return { ok: false, response: errorResponse('Unauthorized', 401) };
+  }
+  const token = auth.slice(prefix.length);
+  if (!safeTokenEq(token, String(secret))) {
+    return { ok: false, response: errorResponse('Unauthorized', 401) };
+  }
+  return { ok: true };
+}
+
 export async function onRequestGet(context) {
   const { env } = context;
   if (!env.DB) {
@@ -77,6 +102,9 @@ export async function onRequestPut(context) {
   if (!env.DB) {
     return errorResponse('D1 binding missing (configure DB in Pages project)', 500);
   }
+  const writeAuth = authorizeWrite(request, env);
+  if (!writeAuth.ok) return writeAuth.response;
+
   let body;
   try {
     body = await request.json();

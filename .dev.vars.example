@@ -1,0 +1,2 @@
+# Copiar para .dev.vars (não commitar). Usado por `npm run pages:dev`
+LIBRARY_WRITE_SECRET=0efa5f326bc20b30ea0f27565c0eff237582e32a3f635fc2b6870e95093a0f3a

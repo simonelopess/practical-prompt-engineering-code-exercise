@@ -2,7 +2,8 @@
   "name": "prompt-library",
   "private": true,
   "scripts": {
-    "deploy": "wrangler pages deploy . --project-name=prompt-library"
+    "deploy": "wrangler pages deploy . --project-name=practical-prompt-engineering-code-exercise",
+    "pages:dev": "wrangler pages dev ."
   },
   "devDependencies": {
     "wrangler": "^4.82.2"

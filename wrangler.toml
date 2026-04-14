@@ -1,11 +1,11 @@
-# Pages: não uses `wrangler deploy` (é para Workers). Usa `npm run deploy`.
-# wrangler.toml
-name = 'practical-prompt-engineering-code-exercise'
+# Nome do projeto em Workers & Pages (tem de bater certo com npm run deploy).
+# Não uses `wrangler deploy` aqui — é para Workers. Deploy: npm run deploy
+name = "practical-prompt-engineering-code-exercise"
 compatibility_date = "2024-11-01"
 pages_build_output_dir = "."
 
 [[d1_databases]]
 binding = "DB"
 database_name = "prompt-library-db"
-# Definir em .env (local) ou no CI: D1_DATABASE_ID=...
-database_id = "${D1_DATABASE_ID}"
+# UUID tem de ir entre aspas. Alternativa: database_id = "${D1_DATABASE_ID}" e D1_DATABASE_ID no .env
+database_id = "16d65346-9c74-419e-9a55-9104f4e2deea"

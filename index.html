@@ -9,6 +9,13 @@
 <body>
   <header class="app-header">
     <h1>Prompt Library</h1>
+    <div class="auth-bar" id="auth-bar" role="region" aria-label="Editor access">
+      <label class="visually-hidden" for="editor-token">Editor token</label>
+      <input type="password" id="editor-token" class="auth-token-input" placeholder="Editor token" autocomplete="off" />
+      <button type="button" id="auth-unlock-btn" class="tool-btn">Unlock editing</button>
+      <button type="button" id="auth-lock-btn" class="tool-btn" hidden>Lock</button>
+      <span id="auth-status" class="auth-status" aria-live="polite">View only — token required to edit</span>
+    </div>
     <div class="header-tools" role="region" aria-label="Data tools">
       <button type="button" id="export-btn" class="tool-btn" aria-label="Export prompts">Export</button>
       <button type="button" id="import-btn" class="tool-btn" aria-label="Import prompts">Import</button>
@@ -68,7 +75,7 @@
     </article>
   </template>
 
-  <footer class="app-footer">Data is stored in your Cloudflare D1 database when this app is deployed with <code>/api/library</code></footer>
+  <footer class="app-footer">Public read; writes need an editor token and <code>LIBRARY_WRITE_SECRET</code> on the server. Data in D1.</footer>
 
   <script src="script.js"></script>
 </body>
